@@ -1,10 +1,7 @@
 package net.xenloops.wifiWarDriver
 
 import android.Manifest
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
+import android.content.*
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.wifi.WifiManager
@@ -14,78 +11,84 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.gms.location.LocationServices
 import net.xenloops.wifiWarDriver.databinding.ActivityMainBinding
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var wifiManager: WifiManager
-    private lateinit var wifiReceiver: BroadcastReceiver
+    private lateinit var adapter: WifiAdapter
+    private lateinit var results: List<WifiNetwork>
+    private lateinit var date: String
+    private lateinit var time: String
+
+    // Register the receiver
+    private val wifiReceiver = object : BroadcastReceiver() {
+
+        override fun onReceive(context: Context, intent: Intent) {
+            date = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+              results = wifiManager.scanResults
+                  .sortedByDescending { it.level }
+                  .map { result ->
+                  WifiNetwork(
+                      ssid = result.SSID.ifEmpty { "<Hidden SSID>" },
+                      signal = result.level,
+                      channel = convertFrequencyToChannel(result.frequency),
+                      encryption = parseEncryption(result.capabilities),
+                      bssid = result.BSSID,
+                      dateseen = date,
+                      timeseen = time,
+                      latitude = Location.latitude,
+                      longitude = Location.longitude
+                  )
+              }
+
+            adapter.updateData(results)
+
+            writeLog()
+
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        adapter = WifiAdapter(emptyList())
+        binding.wifiRecycler.layoutManager = LinearLayoutManager(this)
+        binding.wifiRecycler.adapter = adapter
+
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
-        // Request permissions if needed
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-            0
-        )
-
-        // Register the receiver
-        wifiReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                val results = wifiManager.scanResults
-
-                val formatted = results.joinToString("\n\n") { result ->
-                    val capabilities = result.capabilities
-                    val encryption = when {
-                        capabilities.contains("WEP") -> "WEP"
-                        capabilities.contains("WPA") -> "WPA/2"
-                        capabilities.contains("EAP") -> "WPA-Ent"
-                        capabilities.contains("SAE") -> "WPA3"
-                        else -> "Open"
-                    }
-                    val name = when {
-                        result.SSID.isEmpty() -> "No SSID"
-                        else -> result.SSID
-                    }
-
-                    """
-                    ** $name / ${result.BSSID.uppercase()} **
-                    Sig: ${result.level} dBm  Ch: ${convertFrequencyToChannel(result.frequency)}  Encryption: $encryption
-                    """.trimIndent()
-                }
-
-                binding.wifiList.text = formatted.ifEmpty { "No networks found." }
-                Log.d("WiFiDebug", "Updated TextView with ${results.size} networks")
-            }
+        if (!wifiManager.isWifiEnabled) {
+            Toast.makeText(this, "WiFi is disabled... enabling it.", Toast.LENGTH_SHORT).show()
+            wifiManager.isWifiEnabled = true
         }
 
         registerReceiver(wifiReceiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
 
-        // Start initial scan
-        val success = wifiManager.startScan()
-        Log.d("WiFiDebug", "Scan started? $success")
-
-        lifecycleScope.launch(Dispatchers.Main) {
-            while (true) {
-                val ok = wifiManager.startScan()
-                Log.d("WiFiDebug", "Repeating scan, success? $ok")
-                delay(2000)
-            }
+        if (hasPermission()) {
+            scanWifi()
+        } else {
+            requestPermission()
         }
+        val loc = Location
+        loc.fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+//        startClock()
+        loc.getLastLocation(this, this, binding)
 
     }
 
+    private fun writeLog() {
+        LogFile.writeWifiLogToFile(this, results)
+    }
 
     private fun hasPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -112,11 +115,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanWifi() {
-        lifecycleScope.launch(Dispatchers.Main) {
-            while (true) {
-                binding.wifiList.text = wifiReceiver.resultData
-                delay(1000)
-            }
+        val success = wifiManager.startScan()
+        if (!success) {
+            Toast.makeText(this, "WiFi scan failed to start", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -139,7 +140,7 @@ class MainActivity : AppCompatActivity() {
             capabilities.contains("WPA2") -> "WPA2"
             capabilities.contains("WPA") -> "WPA"
             capabilities.contains("WEP") -> "WEP"
-            capabilities.contains("PSK") -> "WPA/WPA2"
+            capabilities.contains("PSK") -> "WPA-PSK"
             capabilities.contains("EAP") -> "EAP"
             else -> "Open"
         }

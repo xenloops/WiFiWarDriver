@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "WiFiDriver"
+rootProject.name = "wifiWarDriver"
 include(":app")
